@@ -1,0 +1,71 @@
+# https://goreleaser.com
+version: 2
+
+project_name: kompadre
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    main: ./cmd/kompadre
+    binary: kompadre
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs?:'
+      - '^ci:'
+      - '^test:'
+      - '^chore:'
+      - '^Merge branch'
+
+homebrew_casks:
+  # Tap publishes Casks/kompadre.rb — users: brew tap SamuAlfageme/homebrew && brew install --cask kompadre
+  - name: kompadre
+    homepage: "https://github.com/SamuAlfageme/kompadre"
+    description: "Compare Kubernetes clusters using kubeconfig files"
+    commit_msg_template: "Brew cask update for {{ .ProjectName }} {{ .Tag }}"
+    binaries:
+      - kompadre
+    url:
+      # Avoid "Download not from same host" audit noise when homepage is github.com/.../repo
+      verified: "github.com/SamuAlfageme/kompadre/"
+    hooks:
+      post:
+        # Unsigned GitHub release downloads are quarantined on macOS; clear for the CLI binary.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/kompadre"]
+          end
+    repository:
+      owner: SamuAlfageme
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"

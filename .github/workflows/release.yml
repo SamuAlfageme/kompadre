@@ -9,93 +9,26 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  goreleaser:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-            suffix: linux_amd64
-            pack: tar
-          - goos: linux
-            goarch: arm64
-            suffix: linux_arm64
-            pack: tar
-          - goos: darwin
-            goarch: amd64
-            suffix: darwin_amd64
-            pack: tar
-          - goos: darwin
-            goarch: arm64
-            suffix: darwin_arm64
-            pack: tar
-          - goos: windows
-            goarch: amd64
-            suffix: windows_amd64
-            pack: zip
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
-      - name: Build and package
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          SUFFIX: ${{ matrix.suffix }}
-          PACK: ${{ matrix.pack }}
-          VERSION: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          EXT=""
-          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
-          BINARY="kompadre${EXT}"
-          OUTDIR="build/${SUFFIX}"
-          mkdir -p "$OUTDIR"
-          CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-            go build -trimpath -ldflags="-s -w" -o "${OUTDIR}/${BINARY}" ./cmd/kompadre
-          cd "$OUTDIR"
-          if [ "$PACK" = "tar" ]; then
-            ARCHIVE="kompadre_${VERSION}_${SUFFIX}.tar.gz"
-            tar czf "../../dist/${ARCHIVE}" "${BINARY}"
-          else
-            ARCHIVE="kompadre_${VERSION}_${SUFFIX}.zip"
-            zip -q "../../dist/${ARCHIVE}" "${BINARY}"
-          fi
-          cd ../..
-          md5sum "dist/${ARCHIVE}" > "dist/${ARCHIVE}.md5"
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
         with:
-          name: dist-${{ matrix.suffix }}
-          path: dist/
-          if-no-files-found: error
-
-  github-release:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: dist
-          pattern: dist-*
-          merge-multiple: true
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          draft: false
-          generate_release_notes: true
-          files: dist/*
+          distribution: goreleaser
+          version: "~> v2"
+          # Omit HOMEBREW_TAP_GITHUB_TOKEN to ship GitHub releases only (no tap commit).
+          args: release --clean ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN == '' && '--skip=homebrew' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
