@@ -53,3 +53,23 @@ func RunShell(ctx context.Context, kubeconfigPath, command string) (stdout, stde
 	// zsh may print startup noise to stdout or stderr.
 	return filterZshRCNoise(outBuf.String()), filterZshRCNoise(errBuf.String()), err
 }
+
+// FormatOutput merges stdout/stderr/err from a single RunShell call into one string,
+// matching the layout the TUI shows in its panes (stdout first, then stderr, with the
+// error message used only when both buffers are empty).
+func FormatOutput(stdout, stderr string, err error) string {
+	var b strings.Builder
+	if stdout != "" {
+		b.WriteString(stdout)
+	}
+	if stderr != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(stderr)
+	}
+	if err != nil && b.Len() == 0 {
+		b.WriteString(err.Error())
+	}
+	return b.String()
+}

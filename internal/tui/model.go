@@ -94,20 +94,35 @@ type Model struct {
 	// completionEpoch bumps on each new Tab-fetch and when a picker result is dismissed/applied,
 	// so late async kubectl __complete responses cannot reopen the UI after you've moved on.
 	completionEpoch uint64
+
+	// autoPrompt is consumed once on Init: it pre-fills the unified prompt and immediately
+	// kicks off the comparison so the TUI launches with results already rendered.
+	autoPrompt string
+	// autoDelta jumps from the first comparison result straight into the delta view.
+	autoDelta bool
 }
 
-// New creates the initial model. Pass empty strings to start the kubeconfig picker.
+// New creates the initial model. Pass empty strings for both kubeconfigs to start the picker.
 // When both leftKube and rightKube are non-empty, paths are validated and the UI opens
-// directly on the compare screen.
-func New(leftKube, rightKube string) (*Model, error) {
+// directly on the compare screen. When prompt is non-empty (only valid alongside both
+// kubeconfigs), the unified prompt is pre-filled and run on launch; if autoDelta is also set,
+// the TUI jumps straight to the delta view as soon as results are ready.
+func New(leftKube, rightKube, prompt string, autoDelta bool) (*Model, error) {
 	m := newModel()
 	leftKube = strings.TrimSpace(leftKube)
 	rightKube = strings.TrimSpace(rightKube)
+	prompt = strings.TrimSpace(prompt)
 	if leftKube == "" && rightKube == "" {
+		if prompt != "" || autoDelta {
+			return nil, fmt.Errorf("a prompt or --delta requires both kubeconfig paths as positional arguments")
+		}
 		return m, nil
 	}
 	if leftKube == "" || rightKube == "" {
 		return nil, fmt.Errorf("provide both kubeconfig paths as positional arguments, or omit them to use the picker")
+	}
+	if autoDelta && prompt == "" {
+		return nil, fmt.Errorf("--delta requires a prompt as the third positional argument")
 	}
 	lk, err := validateKubeconfigFile(leftKube)
 	if err != nil {
@@ -121,6 +136,12 @@ func New(leftKube, rightKube string) (*Model, error) {
 	m.rightKube = rk
 	m.phase = phaseCompare
 	m.unifiedInput.Focus()
+	if prompt != "" {
+		m.unifiedInput.SetValue(prompt)
+		m.unifiedInput.SetCursor(len(prompt))
+		m.autoPrompt = prompt
+		m.autoDelta = autoDelta
+	}
 	m.layoutViewports()
 	return m, nil
 }
@@ -272,6 +293,13 @@ func (m *Model) refreshBrowse() error {
 
 // Init implements tea.Model.
 func (m *Model) Init() tea.Cmd {
+	if m.autoPrompt != "" {
+		cmd := m.autoPrompt
+		m.autoPrompt = ""
+		m.busy = true
+		m.status = "Running…"
+		return tea.Batch(textinput.Blink, m.runBoth(cmd))
+	}
 	return textinput.Blink
 }
 
@@ -295,6 +323,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = msg.err.Error()
 		}
 		m.layoutViewports()
+		if m.autoDelta && (m.leftOut != "" || m.rightOut != "") {
+			m.autoDelta = false
+			return m.openDelta()
+		}
 		return m, nil
 
 	case runSplitDoneMsg:
@@ -1050,8 +1082,8 @@ func (m *Model) runBoth(command string) tea.Cmd {
 			err = errR
 		}
 		return runBothDoneMsg{
-			leftOut:  formatRunOutput(lo, le, errL),
-			rightOut: formatRunOutput(ro, re, errR),
+			leftOut:  kubectl.FormatOutput(lo, le, errL),
+			rightOut: kubectl.FormatOutput(ro, re, errR),
 			err:      err,
 		}
 	}
@@ -1076,8 +1108,8 @@ func (m *Model) runSplit(leftCmd, rightCmd string) tea.Cmd {
 		}
 
 		return runSplitDoneMsg{
-			leftOut:  formatRunOutput(lo, le, errL),
-			rightOut: formatRunOutput(ro, re, errR),
+			leftOut:  kubectl.FormatOutput(lo, le, errL),
+			rightOut: kubectl.FormatOutput(ro, re, errR),
 			err:      firstErr(errL, errR),
 		}
 	}
@@ -1090,23 +1122,6 @@ func firstErr(errs ...error) error {
 		}
 	}
 	return nil
-}
-
-func formatRunOutput(stdout, stderr string, err error) string {
-	var b strings.Builder
-	if stdout != "" {
-		b.WriteString(stdout)
-	}
-	if stderr != "" {
-		if b.Len() > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(stderr)
-	}
-	if err != nil && b.Len() == 0 {
-		b.WriteString(err.Error())
-	}
-	return b.String()
 }
 
 func (m *Model) openDelta() (tea.Model, tea.Cmd) {
