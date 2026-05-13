@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Diff runs delta on two text blobs. If the delta binary is missing, returns a simple unified diff.
@@ -101,6 +103,29 @@ func fallbackDiff(leftPath, rightPath string) (string, error) {
 	cmd.Stdin = bytes.NewReader(nil)
 	_ = cmd.Run() // diff exits 1 when files differ
 	return sanitizeDiffOutput(out.String()), nil
+}
+
+// SavePair writes left and right outputs to a directory as timestamped files.
+// Returns the two file paths written. If dir is empty, it uses the current directory.
+func SavePair(dir, left, right string) (leftPath, rightPath string, err error) {
+	if dir == "" {
+		dir = "."
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", "", fmt.Errorf("create output dir: %w", err)
+	}
+	ts := time.Now().Format("20060102-150405")
+	leftPath = filepath.Join(dir, fmt.Sprintf("kompadre-left-%s.txt", ts))
+	rightPath = filepath.Join(dir, fmt.Sprintf("kompadre-right-%s.txt", ts))
+
+	if err := os.WriteFile(leftPath, []byte(left), 0o644); err != nil {
+		return "", "", fmt.Errorf("write left: %w", err)
+	}
+	if err := os.WriteFile(rightPath, []byte(right), 0o644); err != nil {
+		os.Remove(leftPath)
+		return "", "", fmt.Errorf("write right: %w", err)
+	}
+	return leftPath, rightPath, nil
 }
 
 func sanitizeDiffOutput(s string) string {

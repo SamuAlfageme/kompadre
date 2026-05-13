@@ -8,17 +8,30 @@ import (
 	"strings"
 )
 
-// filterZshRCNoise drops lines that zsh prints when ~/.zshrc runs in a no-TTY eval from
-// `zsh -ic` (e.g. "can't change option: zle"). This is not from kubectl.
-func filterZshRCNoise(s string) string {
+// filterShellNoise drops lines that are noise from zsh startup or kubectl config warnings.
+func filterShellNoise(s string) string {
 	if s == "" {
 		return ""
 	}
 	lines := strings.Split(s, "\n")
 	out := lines[:0]
+	skip := false
 	for _, ln := range lines {
 		if strings.Contains(ln, "can't change option: zle") {
 			continue
+		}
+		// kubectl prints multi-line config permission warnings; drop them.
+		if strings.Contains(ln, "WARNING: Kubernetes configuration file is") {
+			skip = true
+			continue
+		}
+		if skip {
+			// The warning continuation lines ("insecure. Location: ..." or blank).
+			trimmed := strings.TrimSpace(ln)
+			if trimmed == "" || strings.HasPrefix(trimmed, "insecure") || strings.HasPrefix(trimmed, "Location:") {
+				continue
+			}
+			skip = false
 		}
 		out = append(out, ln)
 	}
@@ -50,8 +63,7 @@ func RunShell(ctx context.Context, kubeconfigPath, command string) (stdout, stde
 	cmd.Stderr = &errBuf
 
 	err = cmd.Run()
-	// zsh may print startup noise to stdout or stderr.
-	return filterZshRCNoise(outBuf.String()), filterZshRCNoise(errBuf.String()), err
+	return filterShellNoise(outBuf.String()), filterShellNoise(errBuf.String()), err
 }
 
 // FormatOutput merges stdout/stderr/err from a single RunShell call into one string,
