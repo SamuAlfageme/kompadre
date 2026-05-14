@@ -24,6 +24,7 @@ import (
 )
 
 const kubectlTimeout = 3 * time.Minute
+const watchInterval = 2 * time.Second
 
 // Tab is often KeyRunes {'\t'} (String is "\t"), not KeyTab ("tab"). Match both.
 var completeTab = key.NewBinding(key.WithKeys("tab", "\t"))
@@ -137,6 +138,9 @@ type Model struct {
 	inputHistIdx   int
 	inputHistDraft string // user's pending text saved when entering history nav
 	inputHistField string // "unified" | "left" | "right" — which field owns the draft
+
+	// watch mode (ctrl+w): periodically re-runs the last command on both clusters.
+	watching bool
 }
 
 // New creates the initial model. Pass empty strings for both kubeconfigs to start the picker.
@@ -286,6 +290,7 @@ type (
 	}
 	nsFetchTickMsg struct{}
 	busyTickMsg    struct{}
+	watchTickMsg   struct{}
 	completeDoneMsg struct {
 		epoch    uint64
 		field    string
@@ -391,7 +396,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.autoDelta = false
 			return m.openDelta()
 		}
-		return m, nil
+		return m, m.scheduleWatchTick()
 
 	case runSplitDoneMsg:
 		m.busy = false
@@ -402,7 +407,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = msg.err.Error()
 		}
 		m.layoutViewports()
-		return m, nil
+		return m, m.scheduleWatchTick()
+
+	case watchTickMsg:
+		if !m.watching || m.busy || m.phase != phaseCompare {
+			return m, nil
+		}
+		mdl, cmd := m.rerunLastCommand()
+		return mdl, cmd
 
 	case busyTickMsg:
 		if !m.busy {
@@ -1883,6 +1895,10 @@ func (m *Model) updateCompare(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.fetchNamespaces(side), tick)
 	}
 
+	if ks == "ctrl+w" {
+		return m.toggleWatch()
+	}
+
 	if ks == "ctrl+r" {
 		m.openHistMenu()
 		return m, nil
@@ -1910,6 +1926,7 @@ func (m *Model) updateCompare(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m.askQuit()
 	case "esc":
+		m.watching = false
 		m.clearCompMenu()
 		m.completionEpoch++
 		m.phase = phasePickRight
@@ -1922,6 +1939,7 @@ func (m *Model) updateCompare(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+d":
 		if m.leftOut != "" || m.rightOut != "" {
+			m.watching = false
 			return m.openDelta()
 		}
 	}
@@ -1952,13 +1970,45 @@ func (m *Model) updateCompare(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // (so we can lock in any in-progress history navigation).
 func isContentEditingKey(msg tea.KeyMsg) bool {
 	switch msg.String() {
-	case "backspace", "delete", "ctrl+w", "ctrl+u":
+	case "backspace", "delete", "ctrl+u":
 		return true
 	}
 	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
 		return unicode.IsPrint(msg.Runes[0])
 	}
 	return false
+}
+
+func (m *Model) toggleWatch() (tea.Model, tea.Cmd) {
+	if m.watching {
+		m.watching = false
+		m.status = "watch stopped"
+		return m, nil
+	}
+	// Need a command in the prompt to watch.
+	hasCmd := false
+	if m.splitMode {
+		hasCmd = strings.TrimSpace(m.leftInput.Value()) != "" || strings.TrimSpace(m.rightInput.Value()) != ""
+	} else {
+		hasCmd = strings.TrimSpace(m.unifiedInput.Value()) != ""
+	}
+	if !hasCmd {
+		m.status = "enter a command first"
+		return m, nil
+	}
+	m.watching = true
+	m.status = ""
+	// Immediately run once, then schedule recurring ticks.
+	mdl, runCmd := m.rerunLastCommand()
+	tick := tea.Tick(watchInterval, func(time.Time) tea.Msg { return watchTickMsg{} })
+	return mdl, tea.Batch(runCmd, tick)
+}
+
+func (m *Model) scheduleWatchTick() tea.Cmd {
+	if !m.watching {
+		return nil
+	}
+	return tea.Tick(watchInterval, func(time.Time) tea.Msg { return watchTickMsg{} })
 }
 
 func (m *Model) rerunLastCommand() (tea.Model, tea.Cmd) {
@@ -2342,9 +2392,14 @@ func (m *Model) viewCompare() string {
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, leftStyled, divider, rightStyled)
 
 	var stat string
-	if m.busy {
+	if m.busy && m.watching {
+		spin := spinFrames[m.busyDot%len(spinFrames)]
+		stat = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render(spin + " watching (2s)")
+	} else if m.busy {
 		spin := spinFrames[m.busyDot%len(spinFrames)]
 		stat = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render(spin + " " + m.status)
+	} else if m.watching {
+		stat = lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Render("⟳ watching (2s)")
 	} else if m.status != "" {
 		stat = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(m.status)
 	}
@@ -2390,7 +2445,7 @@ func (m *Model) viewCompare() string {
 	}
 
 	// Bottom command strip.
-	helpPalette := "ctrl+s split • ←/→ focus A|B • ↑/↓ history • ctrl+o complete (split) • ctrl+r history search • ctrl+k ctx • ctrl+n ns • pgup/dn panes • ctrl+d delta • ctrl+c quit"
+	helpPalette := "ctrl+s split • ←/→ focus A|B • ↑/↓ history • ctrl+o complete (split) • ctrl+r history search • ctrl+k ctx • ctrl+n ns • ctrl+w watch • pgup/dn panes • ctrl+d delta • ctrl+c quit"
 	helpStyle := lipgloss.NewStyle().
 		Background(lipgloss.Color("235")).
 		Foreground(lipgloss.Color("252")).
