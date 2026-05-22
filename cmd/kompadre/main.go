@@ -24,10 +24,23 @@ const headlessTimeout = 3 * time.Minute
 // runtime build info embedded by the Go toolchain.
 var version = ""
 
+// formatBuildTime renders an RFC3339 UTC timestamp in the user's local timezone.
+func formatBuildTime(utc string) string {
+	if utc == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, utc)
+	if err != nil {
+		return utc
+	}
+	return t.Local().Format("2006-01-02 15:04:05 MST")
+}
+
 // versionString returns a human-readable version line including the git commit
 // sha (and dirty marker) when available.
 func versionString() string {
 	tag := strings.TrimSpace(version)
+	injectedTag := tag != ""
 	commit := ""
 	commitTime := ""
 	modified := false
@@ -61,13 +74,15 @@ func versionString() string {
 	out := "kompadre " + tag
 	if short != "" {
 		out += " (" + short
-		if modified {
+		// Release builds inject the tag via -ldflags; ignore vcs.modified then
+		// (it can be true for untracked files while the tree is otherwise clean).
+		if modified && !injectedTag && !strings.Contains(tag, "-dirty") {
 			out += "-dirty"
 		}
 		out += ")"
 	}
 	if commitTime != "" {
-		out += " built " + commitTime
+		out += " built " + formatBuildTime(commitTime)
 	}
 	return out
 }

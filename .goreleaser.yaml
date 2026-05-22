@@ -14,6 +14,7 @@ builds:
     binary: kompadre
     ldflags:
       - -s -w
+      - -X main.version={{.Tag}}
     goos:
       - linux
       - darwin
